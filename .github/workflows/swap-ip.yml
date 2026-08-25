@@ -1,0 +1,249 @@
+name: swap-ip
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 操作模式（both/us/tw 快速换临时IP；static-us/static-tw 新建静态IP绑定；cleanup 清理空闲静态IP；stop-tw/start-tw 开关台湾机器）
+        required: true
+        default: both
+        type: choice
+        options: [both, us, tw, static-us, static-tw, cleanup, stop-tw, start-tw]
+  push:
+    paths: [".swap-trigger", ".swap-trigger-us", ".swap-trigger-tw", ".swap-trigger-static-us", ".swap-trigger-static-tw", ".swap-trigger-cleanup", ".swap-trigger-stop-tw", ".swap-trigger-start-tw"]
+
+jobs:
+  check-and-swap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. 触发条件判定 + 模式（TARGET）
+      - name: Check trigger condition
+        id: trigger
+        run: |
+          TARGET="both"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "手动触发"
+            TARGET="${{ inputs.target }}"
+          elif [ -f .swap-trigger-cleanup ]; then
+            echo "标记文件 cleanup 触发"
+            TARGET="cleanup"
+          elif [ -f .swap-trigger-static-us ]; then
+            echo "标记文件 static-us 触发"
+            TARGET="static-us"
+          elif [ -f .swap-trigger-static-tw ]; then
+            echo "标记文件 static-tw 触发"
+            TARGET="static-tw"
+          elif [ -f .swap-trigger-stop-tw ]; then
+            echo "标记文件 stop-tw 触发"
+            TARGET="stop-tw"
+          elif [ -f .swap-trigger-start-tw ]; then
+            echo "标记文件 start-tw 触发"
+            TARGET="start-tw"
+          elif [ -f .swap-trigger-us ]; then
+            echo "标记文件 us 触发"
+            TARGET="us"
+          elif [ -f .swap-trigger-tw ]; then
+            echo "标记文件 tw 触发"
+            TARGET="tw"
+          elif [ -f .swap-trigger ]; then
+            echo "标记文件触发"
+            TARGET="both"
+          else
+            echo "无触发条件，跳过"
+            exit 0
+          fi
+          echo "TRIGGERED=1" >> "$GITHUB_OUTPUT"
+          echo "TARGET=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "模式: $TARGET"
+
+      # 2. 认证 GCP
+      - name: Auth GCP
+        if: steps.trigger.outputs.TRIGGERED == '1'
+        run: |
+          echo "$GCP_KEY" | base64 -d > /tmp/gcp-key.json
+          gcloud auth activate-service-account --key-file=/tmp/gcp-key.json
+          gcloud config set project ${{ secrets.GCP_PROJECT }}
+        env:
+          GCP_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+
+      # 3. 快速换临时 IP - us（美西 A）
+      - name: Swap IP (us - ephemeral)
+        if: steps.trigger.outputs.TRIGGERED == '1' && (steps.trigger.outputs.TARGET == 'us' || steps.trigger.outputs.TARGET == 'both')
+        env:
+          INSTANCE: ${{ secrets.GCP_INSTANCE_A }}
+          ZONE: ${{ secrets.GCP_ZONE_A }}
+        run: |
+          CONFIG_NAME=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
+            --format='value(networkInterfaces[0].accessConfigs[0].name)')
+          CONFIG_NAME=${CONFIG_NAME:-External NAT}
+          gcloud compute instances delete-access-config "$INSTANCE" \
+            --zone "$ZONE" --access-config-name="$CONFIG_NAME" --quiet
+          sleep 10
+          for i in 1 2 3; do
+            if gcloud compute instances add-access-config "$INSTANCE" \
+                --zone "$ZONE" --access-config-name="$CONFIG_NAME"; then
+              break
+            fi
+            echo "add 重试 $i/3"
+            sleep 10
+          done
+          echo "us 新 IP: $(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" --format='value(networkInterfaces[0].accessConfigs[0].natIP)')"
+
+      # 4. 快速换临时 IP - tw（台湾 B）
+      - name: Swap IP (tw - ephemeral)
+        if: steps.trigger.outputs.TRIGGERED == '1' && (steps.trigger.outputs.TARGET == 'tw' || steps.trigger.outputs.TARGET == 'both')
+        env:
+          INSTANCE: ${{ secrets.GCP_INSTANCE_B }}
+          ZONE: ${{ secrets.GCP_ZONE_B }}
+        run: |
+          if [ -z "$INSTANCE" ]; then
+            echo "tw 机器未配置，跳过"
+            exit 0
+          fi
+          CONFIG_NAME=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
+            --format='value(networkInterfaces[0].accessConfigs[0].name)')
+          CONFIG_NAME=${CONFIG_NAME:-External NAT}
+          gcloud compute instances delete-access-config "$INSTANCE" \
+            --zone "$ZONE" --access-config-name="$CONFIG_NAME" --quiet
+          sleep 10
+          for i in 1 2 3; do
+            if gcloud compute instances add-access-config "$INSTANCE" \
+                --zone "$ZONE" --access-config-name="$CONFIG_NAME"; then
+              break
+            fi
+            echo "add 重试 $i/3"
+            sleep 10
+          done
+          echo "tw 新 IP: $(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" --format='value(networkInterfaces[0].accessConfigs[0].natIP)')"
+
+      # 5. 静态 IP 换绑 - us
+      - name: Static swap (us)
+        if: steps.trigger.outputs.TRIGGERED == '1' && steps.trigger.outputs.TARGET == 'static-us'
+        env:
+          INSTANCE: ${{ secrets.GCP_INSTANCE_A }}
+          ZONE: ${{ secrets.GCP_ZONE_A }}
+        run: |
+          REGION=$(echo "$ZONE" | sed 's/-[a-z]*$//')
+          ADDR_NAME="swap-us-$(date +%s)"
+          gcloud compute addresses create "$ADDR_NAME" --region "$REGION"
+          NEW_IP=$(gcloud compute addresses describe "$ADDR_NAME" --region "$REGION" --format="value(address)")
+          echo "新建静态 IP: $NEW_IP"
+          CONFIG_NAME=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
+            --format='value(networkInterfaces[0].accessConfigs[0].name)')
+          CONFIG_NAME=${CONFIG_NAME:-External NAT}
+          gcloud compute instances delete-access-config "$INSTANCE" \
+            --zone "$ZONE" --access-config-name="$CONFIG_NAME" --quiet
+          sleep 10
+          for i in 1 2 3; do
+            if gcloud compute instances add-access-config "$INSTANCE" \
+                --zone "$ZONE" --access-config-name="$CONFIG_NAME" --address="$NEW_IP"; then
+              break
+            fi
+            echo "add 重试 $i/3"
+            sleep 10
+          done
+          echo "us 当前 IP: $(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" --format='value(networkInterfaces[0].accessConfigs[0].natIP)')"
+
+      # 6. 静态 IP 换绑 - tw
+      - name: Static swap (tw)
+        if: steps.trigger.outputs.TRIGGERED == '1' && steps.trigger.outputs.TARGET == 'static-tw'
+        env:
+          INSTANCE: ${{ secrets.GCP_INSTANCE_B }}
+          ZONE: ${{ secrets.GCP_ZONE_B }}
+        run: |
+          if [ -z "$INSTANCE" ]; then
+            echo "tw 机器未配置，跳过"
+            exit 0
+          fi
+          REGION=$(echo "$ZONE" | sed 's/-[a-z]*$//')
+          ADDR_NAME="swap-tw-$(date +%s)"
+          gcloud compute addresses create "$ADDR_NAME" --region "$REGION"
+          NEW_IP=$(gcloud compute addresses describe "$ADDR_NAME" --region "$REGION" --format="value(address)")
+          echo "新建静态 IP: $NEW_IP"
+          CONFIG_NAME=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
+            --format='value(networkInterfaces[0].accessConfigs[0].name)')
+          CONFIG_NAME=${CONFIG_NAME:-External NAT}
+          gcloud compute instances delete-access-config "$INSTANCE" \
+            --zone "$ZONE" --access-config-name="$CONFIG_NAME" --quiet
+          sleep 10
+          for i in 1 2 3; do
+            if gcloud compute instances add-access-config "$INSTANCE" \
+                --zone "$ZONE" --access-config-name="$CONFIG_NAME" --address="$NEW_IP"; then
+              break
+            fi
+            echo "add 重试 $i/3"
+            sleep 10
+          done
+          echo "tw 当前 IP: $(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" --format='value(networkInterfaces[0].accessConfigs[0].natIP)')"
+
+      # 7. 停止 tw 机器（省费用）
+      - name: Stop tw instance
+        if: steps.trigger.outputs.TRIGGERED == '1' && steps.trigger.outputs.TARGET == 'stop-tw'
+        env:
+          INSTANCE: ${{ secrets.GCP_INSTANCE_B }}
+          ZONE: ${{ secrets.GCP_ZONE_B }}
+        run: |
+          gcloud compute instances stop "$INSTANCE" --zone "$ZONE" --quiet
+          echo "tw 已停止"
+
+      # 8. 启动 tw 机器
+      - name: Start tw instance
+        if: steps.trigger.outputs.TRIGGERED == '1' && steps.trigger.outputs.TARGET == 'start-tw'
+        env:
+          INSTANCE: ${{ secrets.GCP_INSTANCE_B }}
+          ZONE: ${{ secrets.GCP_ZONE_B }}
+        run: |
+          gcloud compute instances start "$INSTANCE" --zone "$ZONE" --quiet
+          echo "tw 已启动，等待分配 IP..."
+          sleep 15
+          echo "tw 新 IP: $(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" --format='value(networkInterfaces[0].accessConfigs[0].natIP)')"
+
+      # 9. 清理空闲静态 IP
+      - name: Cleanup idle static IPs
+        if: steps.trigger.outputs.TRIGGERED == '1' && steps.trigger.outputs.TARGET == 'cleanup'
+        run: |
+          count=0
+          while read -r NAME REGION; do
+            [ -z "$NAME" ] && continue
+            echo "删除空闲静态 IP: $NAME ($REGION)"
+            gcloud compute addresses delete "$NAME" --region "$REGION" --quiet
+            count=$((count+1))
+          done < <(gcloud compute addresses list --filter="status=RESERVED" --format="value(name,region.basename())")
+          echo "已清理 $count 个空闲静态 IP"
+
+      # 10. 清理标记文件
+      - name: Clean trigger file
+        if: steps.trigger.outputs.TRIGGERED == '1' && github.event_name == 'push'
+        run: |
+          git rm -q --ignore-unmatch .swap-trigger .swap-trigger-us .swap-trigger-tw \
+            .swap-trigger-static-us .swap-trigger-static-tw .swap-trigger-cleanup \
+            .swap-trigger-stop-tw .swap-trigger-start-tw
+          git config user.name "sub-merge"
+          git config user.email "sub-merge@users.noreply.github.com"
+          git commit -q -m "clear swap trigger [skip ci]"
+          git push
+
+      # 11. 通知结果（SENDKEY 未配置时静默跳过）
+      - name: Notify
+        if: steps.trigger.outputs.TRIGGERED == '1'
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+          INSTANCE_A: ${{ secrets.GCP_INSTANCE_A }}
+          ZONE_A: ${{ secrets.GCP_ZONE_A }}
+          INSTANCE_B: ${{ secrets.GCP_INSTANCE_B }}
+          ZONE_B: ${{ secrets.GCP_ZONE_B }}
+          TARGET: ${{ steps.trigger.outputs.TARGET }}
+        run: |
+          if [ -z "$SENDKEY" ]; then
+            echo "未配置 SENDKEY，跳过通知"
+            exit 0
+          fi
+          IP_A=$(gcloud compute instances describe "$INSTANCE_A" --zone "$ZONE_A" \
+            --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null || echo "?")
+          IP_B=$(gcloud compute instances describe "$INSTANCE_B" --zone "$ZONE_B" \
+            --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null || echo "?")
+          curl -s --max-time 15 "https://sctapi.ftqq.com/$SENDKEY.send" \
+            --data-urlencode "title=🔄 GCP IP 操作完成 ($TARGET)" \
+            --data-urlencode "desp=模式: $TARGET%0Aus(美西) IP: $IP_A%0Atw(台湾) IP: $IP_B%0A订阅将自动同步，客户端刷新即可恢复。" || true
