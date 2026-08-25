@@ -1,0 +1,20 @@
+  - name: us-vless
+    type: vless
+    server: 35.203.153.203
+    port: 443
+    uuid: 32aca7dd-2f68-45b6-a5ef-0dce84311ed2
+    network: tcp
+    tls: true
+    udp: true
+    flow: xtls-rprx-vision
+    servername: dl.google.com
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: o2r9TJMrk5pKmFm3eiaj9m0swiDMOrHYHLr_9DlSzC8
+  - name: us-hysteria2
+    type: hysteria2
+    server: 35.203.153.203
+    port: 443
+    password: 32aca7dd-2f68-45b6-a5ef-0dce84311ed2
+    sni: www.microsoft.com
+    skip-cert-verify: true

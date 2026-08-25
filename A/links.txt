@@ -1,0 +1,2 @@
+vless://32aca7dd-2f68-45b6-a5ef-0dce84311ed2@35.203.153.203:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=dl.google.com&fp=chrome&pbk=o2r9TJMrk5pKmFm3eiaj9m0swiDMOrHYHLr_9DlSzC8&sid=&type=tcp&headerType=none#us-vless
+hysteria2://32aca7dd-2f68-45b6-a5ef-0dce84311ed2@35.203.153.203:443?sni=www.microsoft.com&insecure=1#us-hysteria2
