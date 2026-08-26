@@ -177,9 +177,7 @@ jobs:
           elif [ "$A_IP_EMPTY" = "1" ]; then
             A_BODY="⚠️ 未运行/无外网 IP，跳过"
           else
-            A_BODY="↓ 下行 ${A_RX_GB} GB" \
-                    "↑ 上行 ${A_TX_GB} GB" \
-                    "合计 ${A_TOTAL_GB} GB"
+            printf -v A_BODY "↓ 下行 %s GB\n↑ 上行 %s GB\n合计 %s GB" "${A_RX_GB}" "${A_TX_GB}" "${A_TOTAL_GB}"
           fi
           # 组装 B 机状态行
           B_LINE="🇹🇼 台湾 tw："
@@ -188,9 +186,7 @@ jobs:
           elif [ "$B_IP_EMPTY" = "1" ]; then
             B_BODY="⚠️ 未运行/无外网 IP，跳过"
           else
-            B_BODY="↓ 下行 ${B_RX_GB} GB" \
-                    "↑ 上行 ${B_TX_GB} GB" \
-                    "合计 ${B_TOTAL_GB} GB"
+            printf -v B_BODY "↓ 下行 %s GB\n↑ 上行 %s GB\n合计 %s GB" "${B_RX_GB}" "${B_TX_GB}" "${B_TOTAL_GB}"
           fi
           DESP=$(printf '%b' \
             "📊 GCP 流量报告（本月累计）\n\n" \
