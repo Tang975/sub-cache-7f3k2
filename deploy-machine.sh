@@ -340,12 +340,12 @@ mkdir -p "$GH_PREFIX"
 cp /var/www/sub/links.txt "$GH_PREFIX/links.txt"
 cp /var/www/sub/clash-proxies.txt "$GH_PREFIX/clash-proxies.txt"
 
-if git diff --quiet; then
+git add "$GH_PREFIX/"
+if git diff --quiet --cached; then
   echo "无变化，跳过推送"
   exit 0
 fi
 
-git add "$GH_PREFIX/"
 git commit --quiet -m "update ${GH_PREFIX} subscription $(date -u +%Y%m%d%H%M%S)"
 git push --quiet "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" \
   "HEAD:${GH_BRANCH:-main}"
