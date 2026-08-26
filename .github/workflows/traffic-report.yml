@@ -73,7 +73,7 @@ jobs:
           scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -i /tmp/id_a scripts/traffic-report.sh "$SSH_USER@$IP:/tmp/traffic-report.sh"
           OUTPUT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            -i /tmp/id_a "$SSH_USER@$IP" "bash /tmp/traffic-report.sh" 2>/dev/null || true)
+            -i /tmp/id_a "$SSH_USER@$IP" "bash /tmp/traffic-report.sh" 2>&1 || true)
           echo "A_RAW<<EOF"
           echo "$OUTPUT"
           echo "EOF"
@@ -140,7 +140,7 @@ jobs:
           scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -i /tmp/id_b scripts/traffic-report.sh "$SSH_USER@$IP:/tmp/traffic-report.sh"
           OUTPUT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            -i /tmp/id_b "$SSH_USER@$IP" "bash /tmp/traffic-report.sh" 2>/dev/null || true)
+            -i /tmp/id_b "$SSH_USER@$IP" "bash /tmp/traffic-report.sh" 2>&1 || true)
           echo "B_RAW<<EOF"
           echo "$OUTPUT"
           echo "EOF"
