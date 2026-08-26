@@ -32,11 +32,28 @@ jobs:
           PUB=$(cat /tmp/id_a.pub)
           gcloud compute instances add-metadata "$INSTANCE" --zone "$ZONE" \
             --metadata "ssh-keys=${SSH_USER}:${PUB}" --quiet
-          IP=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
-            --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
+          # 若实例未运行则先启动
+          STATUS=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
+            --format='value(status)')
+          echo "A status: $STATUS"
+          if [ "$STATUS" != "RUNNING" ]; then
+            gcloud compute instances start "$INSTANCE" --zone "$ZONE" --quiet
+          fi
+          # 轮询等待外网 IP（刚启动的实例可能暂无 IP）
+          IP=""
+          for i in $(seq 1 24); do
+            IP=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
+              --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
+            if [ -n "$IP" ]; then break; fi
+            sleep 5
+          done
           echo "A_IP=$IP"
+          if [ -z "$IP" ]; then
+            echo "ERROR: A 机无外网 IP" >&2
+            exit 1
+          fi
           # 等 SSH 就绪
-          for i in $(seq 1 15); do
+          for i in $(seq 1 20); do
             if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
                 -i /tmp/id_a "$SSH_USER@$IP" 'true' 2>/dev/null; then
               echo "A SSH ready (try $i)"
@@ -46,13 +63,11 @@ jobs:
           done
           scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -i /tmp/id_a scripts/traffic-report.sh "$SSH_USER@$IP:/tmp/traffic-report.sh"
-          # 运行统计脚本并捕获全部输出
           OUTPUT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -i /tmp/id_a "$SSH_USER@$IP" "bash /tmp/traffic-report.sh" 2>/dev/null || true)
           echo "A_RAW<<EOF"
           echo "$OUTPUT"
           echo "EOF"
-          # 解析出关键字段写入 GITHUB_OUTPUT
           RX_GB=$(echo "$OUTPUT" | awk -F= '/^RX_GB=/{print $2}')
           TX_GB=$(echo "$OUTPUT" | awk -F= '/^TX_GB=/{print $2}')
           TOTAL_GB=$(echo "$OUTPUT" | awk -F= '/^TOTAL_GB=/{print $2}')
@@ -75,10 +90,29 @@ jobs:
           PUB=$(cat /tmp/id_b.pub)
           gcloud compute instances add-metadata "$INSTANCE" --zone "$ZONE" \
             --metadata "ssh-keys=${SSH_USER}:${PUB}" --quiet
-          IP=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
-            --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
+          STATUS=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
+            --format='value(status)')
+          echo "B status: $STATUS"
+          if [ "$STATUS" != "RUNNING" ]; then
+            gcloud compute instances start "$INSTANCE" --zone "$ZONE" --quiet
+          fi
+          IP=""
+          for i in $(seq 1 24); do
+            IP=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
+              --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
+            if [ -n "$IP" ]; then break; fi
+            sleep 5
+          done
           echo "B_IP=$IP"
-          for i in $(seq 1 15); do
+          if [ -z "$IP" ]; then
+            echo "B_IP_EMPTY=1" >> "$GITHUB_OUTPUT"
+            echo "B_RX_GB=0.00" >> "$GITHUB_OUTPUT"
+            echo "B_TX_GB=0.00" >> "$GITHUB_OUTPUT"
+            echo "B_TOTAL_GB=0.00" >> "$GITHUB_OUTPUT"
+            echo "ERROR: B 机无外网 IP（可能未运行或无外部 IP）" >&2
+            exit 0
+          fi
+          for i in $(seq 1 20); do
             if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
                 -i /tmp/id_b "$SSH_USER@$IP" 'true' 2>/dev/null; then
               echo "B SSH ready (try $i)"
@@ -110,19 +144,25 @@ jobs:
           B_RX_GB: ${{ steps.traffic_b.outputs.B_RX_GB }}
           B_TX_GB: ${{ steps.traffic_b.outputs.B_TX_GB }}
           B_TOTAL_GB: ${{ steps.traffic_b.outputs.B_TOTAL_GB }}
+          B_IP_EMPTY: ${{ steps.traffic_b.outputs.B_IP_EMPTY }}
         run: |
           if [ -z "$SENDKEY" ]; then
             echo "未配置 SENDKEY，跳过通知"
             exit 0
           fi
-          # 用 printf 拼装通知内容（避免 heredoc 在 YAML 块标量中的缩进问题）
-          DESP=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+          # 组装 B 机状态行
+          if [ "$B_IP_EMPTY" = "1" ]; then
+            B_LINE="⚠️ 台湾 tw：未运行/无外网 IP，跳过"
+          else
+            B_LINE="🇹🇼 台湾 tw："
+          fi
+          DESP=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
             "📊 GCP 流量报告（本月累计）" "" \
             "🇺🇸 美西 us：" \
             "↓ 下行 ${A_RX_GB} GB" \
             "↑ 上行 ${A_TX_GB} GB" \
             "合计 ${A_TOTAL_GB} GB" "" \
-            "🇹🇼 台湾 tw：" \
+            "${B_LINE}" \
             "↓ 下行 ${B_RX_GB} GB" \
             "↑ 上行 ${B_TX_GB} GB" \
             "合计 ${B_TOTAL_GB} GB" "" \
@@ -135,3 +175,4 @@ jobs:
             --data-urlencode "desp=$DESP"
           echo ""
           echo "已发送通知"
+
