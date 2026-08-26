@@ -73,16 +73,24 @@ jobs:
           scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -i /tmp/id_a scripts/traffic-report.sh "$SSH_USER@$IP:/tmp/traffic-report.sh"
           OUTPUT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            -i /tmp/id_a "$SSH_USER@$IP" "bash /tmp/traffic-report.sh" 2>&1 || true)
+            -i /tmp/id_a "$SSH_USER@$IP" "bash /tmp/traffic-report.sh --quota=1000 --hist=7" 2>&1 || true)
           echo "A_RAW<<EOF"
           echo "$OUTPUT"
           echo "EOF"
           RX_GB=$(echo "$OUTPUT" | awk -F= '/^RX_GB=/{print $2}')
           TX_GB=$(echo "$OUTPUT" | awk -F= '/^TX_GB=/{print $2}')
           TOTAL_GB=$(echo "$OUTPUT" | awk -F= '/^TOTAL_GB=/{print $2}')
+          LEFT_GB=$(echo "$OUTPUT" | awk -F= '/^LEFT_GB=/{print $2}')
+          USED_PCT=$(echo "$OUTPUT" | awk -F= '/^USED_PCT=/{print $2}')
           echo "A_RX_GB=${RX_GB:-0.00}" >> "$GITHUB_OUTPUT"
           echo "A_TX_GB=${TX_GB:-0.00}" >> "$GITHUB_OUTPUT"
           echo "A_TOTAL_GB=${TOTAL_GB:-0.00}" >> "$GITHUB_OUTPUT"
+          echo "A_LEFT_GB=${LEFT_GB:-0.00}" >> "$GITHUB_OUTPUT"
+          echo "A_USED_PCT=${USED_PCT:-0.0}" >> "$GITHUB_OUTPUT"
+          # 近 7 天柱状图（脚本已按行输出 CHART_i=MM-DD bar GB G）
+          echo "A_CHART<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$OUTPUT" | grep '^CHART_' | sed 's/^CHART_[0-9]*=//' >> "$GITHUB_OUTPUT" || true
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
       # ---------- 采集 B 机（台湾）----------
       - name: Collect traffic - B (tw)
@@ -140,16 +148,23 @@ jobs:
           scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -i /tmp/id_b scripts/traffic-report.sh "$SSH_USER@$IP:/tmp/traffic-report.sh"
           OUTPUT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            -i /tmp/id_b "$SSH_USER@$IP" "bash /tmp/traffic-report.sh" 2>&1 || true)
+            -i /tmp/id_b "$SSH_USER@$IP" "bash /tmp/traffic-report.sh --quota=1000 --hist=7" 2>&1 || true)
           echo "B_RAW<<EOF"
           echo "$OUTPUT"
           echo "EOF"
           RX_GB=$(echo "$OUTPUT" | awk -F= '/^RX_GB=/{print $2}')
           TX_GB=$(echo "$OUTPUT" | awk -F= '/^TX_GB=/{print $2}')
           TOTAL_GB=$(echo "$OUTPUT" | awk -F= '/^TOTAL_GB=/{print $2}')
+          LEFT_GB=$(echo "$OUTPUT" | awk -F= '/^LEFT_GB=/{print $2}')
+          USED_PCT=$(echo "$OUTPUT" | awk -F= '/^USED_PCT=/{print $2}')
           echo "B_RX_GB=${RX_GB:-0.00}" >> "$GITHUB_OUTPUT"
           echo "B_TX_GB=${TX_GB:-0.00}" >> "$GITHUB_OUTPUT"
           echo "B_TOTAL_GB=${TOTAL_GB:-0.00}" >> "$GITHUB_OUTPUT"
+          echo "B_LEFT_GB=${LEFT_GB:-0.00}" >> "$GITHUB_OUTPUT"
+          echo "B_USED_PCT=${USED_PCT:-0.0}" >> "$GITHUB_OUTPUT"
+          echo "B_CHART<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$OUTPUT" | grep '^CHART_' | sed 's/^CHART_[0-9]*=//' >> "$GITHUB_OUTPUT" || true
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
       # ---------- 汇总 + Server酱 通知 ----------
       - name: Send notification
@@ -158,41 +173,64 @@ jobs:
           A_RX_GB: ${{ steps.traffic_a.outputs.A_RX_GB }}
           A_TX_GB: ${{ steps.traffic_a.outputs.A_TX_GB }}
           A_TOTAL_GB: ${{ steps.traffic_a.outputs.A_TOTAL_GB }}
+          A_LEFT_GB: ${{ steps.traffic_a.outputs.A_LEFT_GB }}
+          A_USED_PCT: ${{ steps.traffic_a.outputs.A_USED_PCT }}
           A_SKIPPED: ${{ steps.traffic_a.outputs.A_SKIPPED }}
           A_IP_EMPTY: ${{ steps.traffic_a.outputs.A_IP_EMPTY }}
+          A_CHART: ${{ steps.traffic_a.outputs.A_CHART }}
           B_RX_GB: ${{ steps.traffic_b.outputs.B_RX_GB }}
           B_TX_GB: ${{ steps.traffic_b.outputs.B_TX_GB }}
           B_TOTAL_GB: ${{ steps.traffic_b.outputs.B_TOTAL_GB }}
+          B_LEFT_GB: ${{ steps.traffic_b.outputs.B_LEFT_GB }}
+          B_USED_PCT: ${{ steps.traffic_b.outputs.B_USED_PCT }}
           B_SKIPPED: ${{ steps.traffic_b.outputs.B_SKIPPED }}
           B_IP_EMPTY: ${{ steps.traffic_b.outputs.B_IP_EMPTY }}
+          B_CHART: ${{ steps.traffic_b.outputs.B_CHART }}
         run: |
           if [ -z "$SENDKEY" ]; then
             echo "未配置 SENDKEY，跳过通知"
             exit 0
           fi
+
           # 组装 A 机状态行
           A_LINE="🇺🇸 美西 us："
           if [ "$A_SKIPPED" = "1" ]; then
             A_BODY="⏸️ 已关停，跳过统计"
+            A_CHART_TEXT=""
           elif [ "$A_IP_EMPTY" = "1" ]; then
             A_BODY="⚠️ 未运行/无外网 IP，跳过"
+            A_CHART_TEXT=""
           else
-            printf -v A_BODY "↓ 下行 %s GB\n↑ 上行 %s GB\n合计 %s GB" "${A_RX_GB}" "${A_TX_GB}" "${A_TOTAL_GB}"
+            printf -v A_BODY "↓ 下行 %s GB\n↑ 上行 %s GB\n合计 %s GB（剩余 %s / 1000 GB，已用 %s%%）" \
+              "${A_RX_GB}" "${A_TX_GB}" "${A_TOTAL_GB}" "${A_LEFT_GB}" "${A_USED_PCT}"
+            A_CHART_TEXT=$(echo "$A_CHART" | awk '{ bar=$2; gsub(/^#/, "▓", bar); gsub(/#/, "▓", bar); gsub(/-/, "░", bar); printf "%s %s %s %s\n", $1, bar, $3, $4 }')
+            [ -n "$A_CHART_TEXT" ] || A_CHART_TEXT="（暂无数据）"
           fi
           # 组装 B 机状态行
           B_LINE="🇹🇼 台湾 tw："
           if [ "$B_SKIPPED" = "1" ]; then
             B_BODY="⏸️ 已关停，跳过统计"
+            B_CHART_TEXT=""
           elif [ "$B_IP_EMPTY" = "1" ]; then
             B_BODY="⚠️ 未运行/无外网 IP，跳过"
+            B_CHART_TEXT=""
           else
-            printf -v B_BODY "↓ 下行 %s GB\n↑ 上行 %s GB\n合计 %s GB" "${B_RX_GB}" "${B_TX_GB}" "${B_TOTAL_GB}"
+            printf -v B_BODY "↓ 下行 %s GB\n↑ 上行 %s GB\n合计 %s GB（剩余 %s / 1000 GB，已用 %s%%）" \
+              "${B_RX_GB}" "${B_TX_GB}" "${B_TOTAL_GB}" "${B_LEFT_GB}" "${B_USED_PCT}"
+            B_CHART_TEXT=$(echo "$B_CHART" | awk '{ bar=$2; gsub(/^#/, "▓", bar); gsub(/#/, "▓", bar); gsub(/-/, "░", bar); printf "%s %s %s %s\n", $1, bar, $3, $4 }')
+            [ -n "$B_CHART_TEXT" ] || B_CHART_TEXT="（暂无数据）"
           fi
+
+          # 近 7 天柱状图标题
+          CHART_HEAD="近 7 天每日用量（GB）"
           DESP=$(printf '%b' \
             "📊 GCP 流量报告（本月累计）\n\n" \
             "${A_LINE}\n${A_BODY}\n\n" \
             "${B_LINE}\n${B_BODY}\n\n" \
-            "数据来自各机器 /proc/net/dev")
+            "━━ ${CHART_HEAD} ━━\n" \
+            "▍A 机（us）\n${A_CHART_TEXT}\n\n" \
+            "▍B 机（tw）\n${B_CHART_TEXT}\n\n" \
+            "数据来自各机器 /proc/net/dev，配额按 1000GB 估算")
           echo "======== 通知内容 ========"
           echo "$DESP"
           echo "=========================="
