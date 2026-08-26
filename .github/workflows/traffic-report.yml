@@ -32,12 +32,17 @@ jobs:
           PUB=$(cat /tmp/id_a.pub)
           gcloud compute instances add-metadata "$INSTANCE" --zone "$ZONE" \
             --metadata "ssh-keys=${SSH_USER}:${PUB}" --quiet
-          # 若实例未运行则先启动
+          # 实例已关停则跳过统计，绝不自动启动
           STATUS=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
             --format='value(status)')
           echo "A status: $STATUS"
           if [ "$STATUS" != "RUNNING" ]; then
-            gcloud compute instances start "$INSTANCE" --zone "$ZONE" --quiet
+            echo "A_SKIPPED=1" >> "$GITHUB_OUTPUT"
+            echo "A_RX_GB=0.00" >> "$GITHUB_OUTPUT"
+            echo "A_TX_GB=0.00" >> "$GITHUB_OUTPUT"
+            echo "A_TOTAL_GB=0.00" >> "$GITHUB_OUTPUT"
+            echo "A 机已关停（$STATUS），跳过统计" >&2
+            exit 0
           fi
           # 轮询等待外网 IP（刚启动的实例可能暂无 IP）
           IP=""
@@ -49,8 +54,12 @@ jobs:
           done
           echo "A_IP=$IP"
           if [ -z "$IP" ]; then
+            echo "A_IP_EMPTY=1" >> "$GITHUB_OUTPUT"
+            echo "A_RX_GB=0.00" >> "$GITHUB_OUTPUT"
+            echo "A_TX_GB=0.00" >> "$GITHUB_OUTPUT"
+            echo "A_TOTAL_GB=0.00" >> "$GITHUB_OUTPUT"
             echo "ERROR: A 机无外网 IP" >&2
-            exit 1
+            exit 0
           fi
           # 等 SSH 就绪
           for i in $(seq 1 20); do
@@ -90,12 +99,19 @@ jobs:
           PUB=$(cat /tmp/id_b.pub)
           gcloud compute instances add-metadata "$INSTANCE" --zone "$ZONE" \
             --metadata "ssh-keys=${SSH_USER}:${PUB}" --quiet
+          # 实例已关停则跳过统计，绝不自动启动
           STATUS=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
             --format='value(status)')
           echo "B status: $STATUS"
           if [ "$STATUS" != "RUNNING" ]; then
-            gcloud compute instances start "$INSTANCE" --zone "$ZONE" --quiet
+            echo "B_SKIPPED=1" >> "$GITHUB_OUTPUT"
+            echo "B_RX_GB=0.00" >> "$GITHUB_OUTPUT"
+            echo "B_TX_GB=0.00" >> "$GITHUB_OUTPUT"
+            echo "B_TOTAL_GB=0.00" >> "$GITHUB_OUTPUT"
+            echo "B 机已关停（$STATUS），跳过统计" >&2
+            exit 0
           fi
+          # 轮询等待外网 IP（刚启动的实例可能暂无 IP）
           IP=""
           for i in $(seq 1 24); do
             IP=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
@@ -112,6 +128,7 @@ jobs:
             echo "ERROR: B 机无外网 IP（可能未运行或无外部 IP）" >&2
             exit 0
           fi
+          # 等 SSH 就绪
           for i in $(seq 1 20); do
             if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
                 -i /tmp/id_b "$SSH_USER@$IP" 'true' 2>/dev/null; then
@@ -141,31 +158,44 @@ jobs:
           A_RX_GB: ${{ steps.traffic_a.outputs.A_RX_GB }}
           A_TX_GB: ${{ steps.traffic_a.outputs.A_TX_GB }}
           A_TOTAL_GB: ${{ steps.traffic_a.outputs.A_TOTAL_GB }}
+          A_SKIPPED: ${{ steps.traffic_a.outputs.A_SKIPPED }}
+          A_IP_EMPTY: ${{ steps.traffic_a.outputs.A_IP_EMPTY }}
           B_RX_GB: ${{ steps.traffic_b.outputs.B_RX_GB }}
           B_TX_GB: ${{ steps.traffic_b.outputs.B_TX_GB }}
           B_TOTAL_GB: ${{ steps.traffic_b.outputs.B_TOTAL_GB }}
+          B_SKIPPED: ${{ steps.traffic_b.outputs.B_SKIPPED }}
           B_IP_EMPTY: ${{ steps.traffic_b.outputs.B_IP_EMPTY }}
         run: |
           if [ -z "$SENDKEY" ]; then
             echo "未配置 SENDKEY，跳过通知"
             exit 0
           fi
-          # 组装 B 机状态行
-          if [ "$B_IP_EMPTY" = "1" ]; then
-            B_LINE="⚠️ 台湾 tw：未运行/无外网 IP，跳过"
+          # 组装 A 机状态行
+          A_LINE="🇺🇸 美西 us："
+          if [ "$A_SKIPPED" = "1" ]; then
+            A_BODY="⏸️ 已关停，跳过统计"
+          elif [ "$A_IP_EMPTY" = "1" ]; then
+            A_BODY="⚠️ 未运行/无外网 IP，跳过"
           else
-            B_LINE="🇹🇼 台湾 tw："
+            A_BODY="↓ 下行 ${A_RX_GB} GB
+↑ 上行 ${A_TX_GB} GB
+合计 ${A_TOTAL_GB} GB"
           fi
-          DESP=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
-            "📊 GCP 流量报告（本月累计）" "" \
-            "🇺🇸 美西 us：" \
-            "↓ 下行 ${A_RX_GB} GB" \
-            "↑ 上行 ${A_TX_GB} GB" \
-            "合计 ${A_TOTAL_GB} GB" "" \
-            "${B_LINE}" \
-            "↓ 下行 ${B_RX_GB} GB" \
-            "↑ 上行 ${B_TX_GB} GB" \
-            "合计 ${B_TOTAL_GB} GB" "" \
+          # 组装 B 机状态行
+          B_LINE="🇹🇼 台湾 tw："
+          if [ "$B_SKIPPED" = "1" ]; then
+            B_BODY="⏸️ 已关停，跳过统计"
+          elif [ "$B_IP_EMPTY" = "1" ]; then
+            B_BODY="⚠️ 未运行/无外网 IP，跳过"
+          else
+            B_BODY="↓ 下行 ${B_RX_GB} GB
+↑ 上行 ${B_TX_GB} GB
+合计 ${B_TOTAL_GB} GB"
+          fi
+          DESP=$(printf '%b' \
+            "📊 GCP 流量报告（本月累计）\n\n" \
+            "${A_LINE}\n${A_BODY}\n\n" \
+            "${B_LINE}\n${B_BODY}\n\n" \
             "数据来自各机器 /proc/net/dev")
           echo "======== 通知内容 ========"
           echo "$DESP"
@@ -175,4 +205,3 @@ jobs:
             --data-urlencode "desp=$DESP"
           echo ""
           echo "已发送通知"
-
