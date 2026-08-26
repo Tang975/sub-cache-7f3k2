@@ -1,0 +1,62 @@
+name: deploy-b
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Auth GCP
+        run: |
+          echo "$GCP_KEY" | base64 -d > /tmp/gcp-key.json
+          gcloud auth activate-service-account --key-file=/tmp/gcp-key.json
+          gcloud config set project ${{ secrets.GCP_PROJECT }}
+        env:
+          GCP_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Inspect B instance
+        id: inspect
+        env:
+          INSTANCE: ${{ secrets.GCP_INSTANCE_B }}
+          ZONE: ${{ secrets.GCP_ZONE_B }}
+        run: |
+          gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
+            --format='value[separator=" | "](name,status,networkInterfaces[0].networkIP,networkInterfaces[0].accessConfigs[0].natIP,metadata.items.ssh-keys)' || true
+          IP=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
+            --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null || echo "")
+          echo "B_IP=$IP" >> "$GITHUB_OUTPUT"
+          echo "external IP: $IP"
+
+      - name: Generate SSH keypair
+        run: |
+          ssh-keygen -t ed25519 -f /tmp/id_deploy -N "" -C "tangmingming0709" >/dev/null
+          chmod 600 /tmp/id_deploy
+          echo "key generated"
+
+      - name: Deploy via gcloud compute ssh
+        env:
+          INSTANCE: ${{ secrets.GCP_INSTANCE_B }}
+          ZONE: ${{ secrets.GCP_ZONE_B }}
+          GH_REPO: Tang975/sub-cache-7f3k2
+          GH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -x
+          # 先用 gcloud compute ssh 触发密钥注入并测试连通（Ubuntu 默认用户）
+          # gcloud 会自动把 /tmp/id_deploy.pub 以 SSH_USER 注入 metadata 并建立该用户
+          gcloud compute ssh "$SSH_USER@$INSTANCE" --zone "$ZONE" \
+            --ssh-key-file=/tmp/id_deploy \
+            --strict-host-key-checking=no \
+            --command="whoami; sudo -n true && echo 'sudo OK' || echo 'sudo needs password'" || exit 1
+          # 上传部署脚本
+          gcloud compute scp --zone "$ZONE" --ssh-key-file=/tmp/id_deploy \
+            --strict-host-key-checking=no \
+            deploy-machine.sh "$SSH_USER@$INSTANCE:/tmp/deploy-machine.sh" || true
+          # 以 root 运行部署脚本（B 角色，只推送不合并）
+          gcloud compute ssh "$SSH_USER@$INSTANCE" --zone "$ZONE" \
+            --ssh-key-file=/tmp/id_deploy \
+            --strict-host-key-checking=no \
+            --command="sudo bash /tmp/deploy-machine.sh B '$GH_REPO' '$GH_TOKEN'" || echo "deploy script exited non-zero (see logs)"
