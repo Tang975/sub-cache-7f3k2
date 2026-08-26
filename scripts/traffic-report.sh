@@ -166,27 +166,3 @@ for d in $DAILY_KEYS; do
   echo "DAILY_$i=$d=$v"
   i=$((i+1))
 done
-
-# ---------- 近 N 天柱状图（直接输出可展示的每行）----------
-CHART_W=10
-maxv=0.0
-for v in $DAILY_VALS; do
-  maxv=$(awk -v m="$maxv" -v x="$v" 'BEGIN{ if (x>m) printf "%.2f", x; else printf "%.2f", m }')
-done
-i=0
-for d in $DAILY_KEYS; do
-  v=$(echo "$DAILY_VALS" | awk -v n=$((i+1)) '{print $n}')
-  [ -n "$v" ] || v="0.00"
-  if awk -v m="$maxv" 'BEGIN{exit !(m>0)}'; then
-    filled=$(awk -v v="$v" -v m="$maxv" -v w="$CHART_W" 'BEGIN{ n=int(v/m*w); if(n>w)n=w; printf "%d", n }')
-  else
-    filled=0
-  fi
-  empty=$((CHART_W - filled))
-  bar=""
-  j=0; while [ $j -lt "$filled" ]; do bar="${bar}#"; j=$((j+1)); done
-  j=0; while [ $j -lt "$empty" ]; do bar="${bar}-"; j=$((j+1)); done
-  dd="${d#*-}"   # MM-DD
-  echo "CHART_$i=$dd $bar $v G"
-  i=$((i+1))
-done
