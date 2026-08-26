@@ -1,0 +1,20 @@
+  - name: tw-vless
+    type: vless
+    server: 35.206.242.141
+    port: 443
+    uuid: 6cecc41b-2c50-4090-a4cd-e6814df1f481
+    network: tcp
+    tls: true
+    udp: true
+    flow: xtls-rprx-vision
+    servername: dl.google.com
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: W2SxXP-zGmjq_kzTTnrgws0mDJxzoP_pa4KGxPAOFTc
+  - name: tw-hysteria2
+    type: hysteria2
+    server: 35.206.242.141
+    port: 443
+    password: 6cecc41b-2c50-4090-a4cd-e6814df1f481
+    sni: www.microsoft.com
+    skip-cert-verify: true
