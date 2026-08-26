@@ -1,0 +1,137 @@
+name: traffic-report
+
+on:
+  workflow_dispatch:
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Auth GCP
+        run: |
+          echo "$GCP_KEY" | base64 -d > /tmp/gcp-key.json
+          gcloud auth activate-service-account --key-file=/tmp/gcp-key.json
+          gcloud config set project ${{ secrets.GCP_PROJECT }}
+        env:
+          GCP_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+
+      # ---------- 采集 A 机（美西）----------
+      - name: Collect traffic - A (us)
+        id: traffic_a
+        env:
+          INSTANCE: ${{ secrets.GCP_INSTANCE_A }}
+          ZONE: ${{ secrets.GCP_ZONE_A }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          MACHINE: "us"
+        run: |
+          set -e
+          ssh-keygen -t ed25519 -f /tmp/id_a -N "" -C "${SSH_USER}" >/dev/null
+          chmod 600 /tmp/id_a
+          PUB=$(cat /tmp/id_a.pub)
+          gcloud compute instances add-metadata "$INSTANCE" --zone "$ZONE" \
+            --metadata "ssh-keys=${SSH_USER}:${PUB}" --quiet
+          IP=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
+            --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
+          echo "A_IP=$IP"
+          # 等 SSH 就绪
+          for i in $(seq 1 15); do
+            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+                -i /tmp/id_a "$SSH_USER@$IP" 'true' 2>/dev/null; then
+              echo "A SSH ready (try $i)"
+              break
+            fi
+            sleep 5
+          done
+          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -i /tmp/id_a scripts/traffic-report.sh "$SSH_USER@$IP:/tmp/traffic-report.sh"
+          # 运行统计脚本并捕获全部输出
+          OUTPUT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -i /tmp/id_a "$SSH_USER@$IP" "bash /tmp/traffic-report.sh" 2>/dev/null || true)
+          echo "A_RAW<<EOF"
+          echo "$OUTPUT"
+          echo "EOF"
+          # 解析出关键字段写入 GITHUB_OUTPUT
+          RX_GB=$(echo "$OUTPUT" | awk -F= '/^RX_GB=/{print $2}')
+          TX_GB=$(echo "$OUTPUT" | awk -F= '/^TX_GB=/{print $2}')
+          TOTAL_GB=$(echo "$OUTPUT" | awk -F= '/^TOTAL_GB=/{print $2}')
+          echo "A_RX_GB=${RX_GB:-0.00}" >> "$GITHUB_OUTPUT"
+          echo "A_TX_GB=${TX_GB:-0.00}" >> "$GITHUB_OUTPUT"
+          echo "A_TOTAL_GB=${TOTAL_GB:-0.00}" >> "$GITHUB_OUTPUT"
+
+      # ---------- 采集 B 机（台湾）----------
+      - name: Collect traffic - B (tw)
+        id: traffic_b
+        env:
+          INSTANCE: ${{ secrets.GCP_INSTANCE_B }}
+          ZONE: ${{ secrets.GCP_ZONE_B }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          MACHINE: "tw"
+        run: |
+          set -e
+          ssh-keygen -t ed25519 -f /tmp/id_b -N "" -C "${SSH_USER}" >/dev/null
+          chmod 600 /tmp/id_b
+          PUB=$(cat /tmp/id_b.pub)
+          gcloud compute instances add-metadata "$INSTANCE" --zone "$ZONE" \
+            --metadata "ssh-keys=${SSH_USER}:${PUB}" --quiet
+          IP=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
+            --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
+          echo "B_IP=$IP"
+          for i in $(seq 1 15); do
+            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+                -i /tmp/id_b "$SSH_USER@$IP" 'true' 2>/dev/null; then
+              echo "B SSH ready (try $i)"
+              break
+            fi
+            sleep 5
+          done
+          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -i /tmp/id_b scripts/traffic-report.sh "$SSH_USER@$IP:/tmp/traffic-report.sh"
+          OUTPUT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -i /tmp/id_b "$SSH_USER@$IP" "bash /tmp/traffic-report.sh" 2>/dev/null || true)
+          echo "B_RAW<<EOF"
+          echo "$OUTPUT"
+          echo "EOF"
+          RX_GB=$(echo "$OUTPUT" | awk -F= '/^RX_GB=/{print $2}')
+          TX_GB=$(echo "$OUTPUT" | awk -F= '/^TX_GB=/{print $2}')
+          TOTAL_GB=$(echo "$OUTPUT" | awk -F= '/^TOTAL_GB=/{print $2}')
+          echo "B_RX_GB=${RX_GB:-0.00}" >> "$GITHUB_OUTPUT"
+          echo "B_TX_GB=${TX_GB:-0.00}" >> "$GITHUB_OUTPUT"
+          echo "B_TOTAL_GB=${TOTAL_GB:-0.00}" >> "$GITHUB_OUTPUT"
+
+      # ---------- 汇总 + Server酱 通知 ----------
+      - name: Send notification
+        env:
+          SENDKEY: ${{ secrets.SENDKEY }}
+          A_RX_GB: ${{ steps.traffic_a.outputs.A_RX_GB }}
+          A_TX_GB: ${{ steps.traffic_a.outputs.A_TX_GB }}
+          A_TOTAL_GB: ${{ steps.traffic_a.outputs.A_TOTAL_GB }}
+          B_RX_GB: ${{ steps.traffic_b.outputs.B_RX_GB }}
+          B_TX_GB: ${{ steps.traffic_b.outputs.B_TX_GB }}
+          B_TOTAL_GB: ${{ steps.traffic_b.outputs.B_TOTAL_GB }}
+        run: |
+          if [ -z "$SENDKEY" ]; then
+            echo "未配置 SENDKEY，跳过通知"
+            exit 0
+          fi
+          # 用 printf 拼装通知内容（避免 heredoc 在 YAML 块标量中的缩进问题）
+          DESP=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+            "📊 GCP 流量报告（本月累计）" "" \
+            "🇺🇸 美西 us：" \
+            "↓ 下行 ${A_RX_GB} GB" \
+            "↑ 上行 ${A_TX_GB} GB" \
+            "合计 ${A_TOTAL_GB} GB" "" \
+            "🇹🇼 台湾 tw：" \
+            "↓ 下行 ${B_RX_GB} GB" \
+            "↑ 上行 ${B_TX_GB} GB" \
+            "合计 ${B_TOTAL_GB} GB" "" \
+            "数据来自各机器 /proc/net/dev")
+          echo "======== 通知内容 ========"
+          echo "$DESP"
+          echo "=========================="
+          curl -s --max-time 20 "https://sctapi.ftqq.com/$SENDKEY.send" \
+            --data-urlencode "title=📊 GCP 流量报告" \
+            --data-urlencode "desp=$DESP"
+          echo ""
+          echo "已发送通知"
