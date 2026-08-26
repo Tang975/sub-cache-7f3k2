@@ -44,7 +44,7 @@ IFACE="${1:-}"
 if [ -z "$IFACE" ]; then
   IFACE=$(detect_iface)
 fi
-if [ -z "$IFACE" ] || [ ! -f "/sys/class/net/$IFACE" ]; then
+if [ -z "$IFACE" ] || [ ! -d "/sys/class/net/$IFACE" ]; then
   echo "ERROR: 找不到网卡 (IFACE='$IFACE')" >&2
   exit 1
 fi
