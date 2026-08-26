@@ -73,7 +73,7 @@ jobs:
           scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -i /tmp/id_a scripts/traffic-report.sh "$SSH_USER@$IP:/tmp/traffic-report.sh"
           OUTPUT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            -i /tmp/id_a "$SSH_USER@$IP" "bash /tmp/traffic-report.sh --quota=1000 --hist=7" 2>&1 || true)
+            -i /tmp/id_a "$SSH_USER@$IP" "bash /tmp/traffic-report.sh --quota=200 --hist=7" 2>&1 || true)
           echo "A_RAW<<EOF"
           echo "$OUTPUT"
           echo "EOF"
@@ -148,7 +148,7 @@ jobs:
           scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -i /tmp/id_b scripts/traffic-report.sh "$SSH_USER@$IP:/tmp/traffic-report.sh"
           OUTPUT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            -i /tmp/id_b "$SSH_USER@$IP" "bash /tmp/traffic-report.sh --quota=1000 --hist=7" 2>&1 || true)
+            -i /tmp/id_b "$SSH_USER@$IP" "bash /tmp/traffic-report.sh --hist=7" 2>&1 || true)
           echo "B_RAW<<EOF"
           echo "$OUTPUT"
           echo "EOF"
@@ -201,7 +201,7 @@ jobs:
             A_BODY="⚠️ 未运行/无外网 IP，跳过"
             A_CHART_TEXT=""
           else
-            printf -v A_BODY "↓ 下行 %s GB\n↑ 上行 %s GB\n合计 %s GB（剩余 %s / 1000 GB，已用 %s%%）" \
+            printf -v A_BODY "↓ 下行 %s GB\n↑ 上行 %s GB\n合计 %s GB（剩余 %s / 200 GB，已用 %s%%）" \
               "${A_RX_GB}" "${A_TX_GB}" "${A_TOTAL_GB}" "${A_LEFT_GB}" "${A_USED_PCT}"
             A_CHART_TEXT=$(echo "$A_CHART" | awk '{ bar=$2; gsub(/^#/, "▓", bar); gsub(/#/, "▓", bar); gsub(/-/, "░", bar); printf "%s %s %s %s\n", $1, bar, $3, $4 }')
             [ -n "$A_CHART_TEXT" ] || A_CHART_TEXT="（暂无数据）"
@@ -215,8 +215,8 @@ jobs:
             B_BODY="⚠️ 未运行/无外网 IP，跳过"
             B_CHART_TEXT=""
           else
-            printf -v B_BODY "↓ 下行 %s GB\n↑ 上行 %s GB\n合计 %s GB（剩余 %s / 1000 GB，已用 %s%%）" \
-              "${B_RX_GB}" "${B_TX_GB}" "${B_TOTAL_GB}" "${B_LEFT_GB}" "${B_USED_PCT}"
+            printf -v B_BODY "↓ 下行 %s GB\n↑ 上行 %s GB\n合计 %s GB" \
+              "${B_RX_GB}" "${B_TX_GB}" "${B_TOTAL_GB}"
             B_CHART_TEXT=$(echo "$B_CHART" | awk '{ bar=$2; gsub(/^#/, "▓", bar); gsub(/#/, "▓", bar); gsub(/-/, "░", bar); printf "%s %s %s %s\n", $1, bar, $3, $4 }')
             [ -n "$B_CHART_TEXT" ] || B_CHART_TEXT="（暂无数据）"
           fi
@@ -230,7 +230,7 @@ jobs:
             "━━ ${CHART_HEAD} ━━\n" \
             "▍A 机（us）\n${A_CHART_TEXT}\n\n" \
             "▍B 机（tw）\n${B_CHART_TEXT}\n\n" \
-            "数据来自各机器 /proc/net/dev，配额按 1000GB 估算")
+            "US 按 Always Free 每月 200GB 估算剩余；TW 无固定配额，仅显示用量")
           echo "======== 通知内容 ========"
           echo "$DESP"
           echo "=========================="
