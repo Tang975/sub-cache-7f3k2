@@ -24,19 +24,29 @@ jobs:
           ZONE: ${{ secrets.GCP_ZONE_B }}
         run: |
           gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
-            --format='value[separator=" | "](name,status,networkInterfaces[0].networkIP,networkInterfaces[0].accessConfigs[0].natIP,metadata.items.ssh-keys)' || true
+            --format='value[separator=" | "](name,status,networkInterfaces[0].networkIP,networkInterfaces[0].accessConfigs[0].natIP)' || true
           IP=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
             --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null || echo "")
           echo "B_IP=$IP" >> "$GITHUB_OUTPUT"
           echo "external IP: $IP"
 
-      - name: Generate SSH keypair
+      - name: Generate SSH keypair + inject via metadata
+        env:
+          INSTANCE: ${{ secrets.GCP_INSTANCE_B }}
+          ZONE: ${{ secrets.GCP_ZONE_B }}
+          SSH_USER: ${{ secrets.SSH_USER }}
         run: |
-          ssh-keygen -t ed25519 -f /tmp/id_deploy -N "" -C "tangmingming0709" >/dev/null
+          set -e
+          ssh-keygen -t ed25519 -f /tmp/id_deploy -N "" -C "${SSH_USER}" >/dev/null
           chmod 600 /tmp/id_deploy
-          echo "key generated"
+          PUB=$(cat /tmp/id_deploy.pub)
+          # 用 metadata 注入公钥（绕过 gcloud compute ssh 对 SA 的 serviceAccountUser 检查）
+          gcloud compute instances add-metadata "$INSTANCE" --zone "$ZONE" \
+            --metadata "ssh-keys=${SSH_USER}:${PUB}" --quiet
+          echo "key injected via metadata"
 
-      - name: Deploy via gcloud compute ssh
+      - name: Upload + run deploy script (plain ssh)
+        id: deploy
         env:
           INSTANCE: ${{ secrets.GCP_INSTANCE_B }}
           ZONE: ${{ secrets.GCP_ZONE_B }}
@@ -44,19 +54,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
           SSH_USER: ${{ secrets.SSH_USER }}
         run: |
-          set -x
-          # 先用 gcloud compute ssh 触发密钥注入并测试连通（Ubuntu 默认用户）
-          # gcloud 会自动把 /tmp/id_deploy.pub 以 SSH_USER 注入 metadata 并建立该用户
-          gcloud compute ssh "$SSH_USER@$INSTANCE" --zone "$ZONE" \
-            --ssh-key-file=/tmp/id_deploy \
-            --strict-host-key-checking=no \
-            --command="whoami; sudo -n true && echo 'sudo OK' || echo 'sudo needs password'" || exit 1
+          set -e
+          IP=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
+            --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
+          echo "connecting to $SSH_USER@$IP"
+          # 等 SSH 端口就绪
+          for i in $(seq 1 15); do
+            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+                -i /tmp/id_deploy "$SSH_USER@$IP" 'true' 2>/dev/null; then
+              echo "SSH ready (try $i)"
+              break
+            fi
+            sleep 5
+          done
           # 上传部署脚本
-          gcloud compute scp --zone "$ZONE" --ssh-key-file=/tmp/id_deploy \
-            --strict-host-key-checking=no \
-            deploy-machine.sh "$SSH_USER@$INSTANCE:/tmp/deploy-machine.sh" || true
+          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -i /tmp/id_deploy deploy-machine.sh "$SSH_USER@$IP:/tmp/deploy-machine.sh"
           # 以 root 运行部署脚本（B 角色，只推送不合并）
-          gcloud compute ssh "$SSH_USER@$INSTANCE" --zone "$ZONE" \
-            --ssh-key-file=/tmp/id_deploy \
-            --strict-host-key-checking=no \
-            --command="sudo bash /tmp/deploy-machine.sh B '$GH_REPO' '$GH_TOKEN'" || echo "deploy script exited non-zero (see logs)"
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -i /tmp/id_deploy "$SSH_USER@$IP" \
+            "sudo bash /tmp/deploy-machine.sh B '$GH_REPO' '$GH_TOKEN'"
+          echo "deploy script completed"
